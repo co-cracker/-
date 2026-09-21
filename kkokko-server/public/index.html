@@ -1,10 +1,6 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <!-- Pusher 라이브러리 -->
-<script src="https://js.pusher.com/8.0.1/pusher.min.js"></script>
-<!-- 서버 없이 프론트엔드 자체 인증을 위한 CryptoJS -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>꼬꼬 아레나</title>
@@ -178,6 +174,10 @@
   .banner h3{font-size:22px;margin-bottom:6px}
   .banner p{color:var(--ink-dim);font-size:13px;margin:0}
 </style>
+<!-- Pusher 라이브러리 -->
+<script src="https://js.pusher.com/8.0.1/pusher.min.js"></script>
+<!-- 서버 없이 프론트엔드 자체 인증을 위한 CryptoJS -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
 </head>
 <body>
 
@@ -265,16 +265,26 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="/socket.io/socket.io.js"></script>
 <script>
 (function(){
 "use strict";
+
+/* ====================== 1. Pusher 키 설정 (발급받은 키로 교체) ====================== */
+var PUSHER_KEY     = '766fcdd4cb6bde65b8f2';
+var PUSHER_SECRET  = 'c85f8e31dd993aa3040d';
+var PUSHER_CLUSTER = 'ap3';
+var EVT = 'client-game-move';        // 모든 통신은 이 이벤트 하나로 묶어서 보낸다
+var SEND_MS = 250;                   // 초당 4회 전송 (Pusher 한도: 클라이언트당 초당 10회)
+
 var el = function(id){ return document.getElementById(id); };
 if(!window.THREE){ alert('3D 엔진을 불러오지 못했습니다'); return; }
+if(!window.Pusher || !window.CryptoJS){ alert('Pusher / CryptoJS 를 불러오지 못했습니다'); return; }
 
-/* ====================== 상수 (서버와 일치) ====================== */
+/* ====================== 상수 (예전 server.js 와 동일) ====================== */
 var MAP_R = 152, ZONE_R = 9, BASE_SPEED = 3.8;
-var cfg = {round:240, gap:45, window:30, limit:5, seekers:2, npc:30, speed:1, jiggle:1.1, tod:'day'};
+var HEN_G = 12;                      // 닭 포물선 중력 (작을수록 높이·멀리)
+var SWING_CD = 1100, SWING_RANGE = 3.0, HEN_RANGE = 3.2, SHIELD_MS = 3000, QUIZ_CD = 2200;
+var cfg = {round:240, gap:45, window:30, limit:5, seekers:2, npc:30, hens:12, speed:1, jiggle:1.1, tod:'soft'};
 
 /* ====================== 시드 난수 (지형 동기화) ====================== */
 function mulberry32(a){
@@ -300,15 +310,19 @@ var amb = new THREE.AmbientLight(0xffffff, .24);
 scene.add(hemi, sun, amb);
 
 var TOD = {
+  soft: {sky:0x4d6371, fog:0x4f6370, hemiS:0xc9bfae, hemiG:0x3f3224, sunC:0xe6d6bd, sunI:.38, ambI:.12, hemiI:.55, sunP:[60,90,40]},
   day:  {sky:0x9ad8ee, fog:0xbfe3f0, hemiS:0xffe9cf, hemiG:0xa2784a, sunC:0xfff3dc, sunI:.78, ambI:.24, sunP:[60,90,40]},
   dusk: {sky:0xf4a877, fog:0xf3b48a, hemiS:0xffd0a0, hemiG:0x7a5230, sunC:0xffb070, sunI:.85, ambI:.2,  sunP:[-70,32,24]},
   night:{sky:0x141f34, fog:0x1b2742, hemiS:0x8aa6e0, hemiG:0x1b2035, sunC:0xb9cbff, sunI:.35, ambI:.3,  sunP:[-40,70,-30]}
 };
+var todApplied = null;
 function applyTod(){
-  var t = TOD[cfg.tod] || TOD.day;
+  if(todApplied === cfg.tod) return;
+  todApplied = cfg.tod;
+  var t = TOD[cfg.tod] || TOD.soft;
   scene.background = new THREE.Color(t.sky);
   scene.fog = new THREE.Fog(t.fog, 60, 340);
-  hemi.color.setHex(t.hemiS); hemi.groundColor.setHex(t.hemiG);
+  hemi.color.setHex(t.hemiS); hemi.intensity = t.hemiI || 1; hemi.groundColor.setHex(t.hemiG);
   sun.color.setHex(t.sunC); sun.intensity = t.sunI;
   sun.position.set(t.sunP[0], t.sunP[1], t.sunP[2]);
   amb.intensity = t.ambI;
@@ -327,11 +341,11 @@ function clay(hex,opt){
 var M = {
   skin:clay(0xfaf3e8), skinRed:clay(0xff5f4a,{emissive:0x6b1409, emissiveIntensity:.8}),
   dark:clay(0x241a14), club:clay(0x9a6a38), clubEnd:clay(0x7d5228),
-  grass:clay(0x8fbe4d), dirt:clay(0xd9a24f),
-  barnRed:clay(0xd8453c), barnW:clay(0xf5efe4), wood:clay(0x9c6b3d), darkWood:clay(0x6c4526),
+  grass:clay(0x51702f), dirt:clay(0xa37b42),
+  barnRed:clay(0x9e4239), barnW:clay(0xcfc7ba), wood:clay(0x9c6b3d), darkWood:clay(0x6c4526),
   tire:clay(0x2e2a28), leaf:clay(0x7fae44), leaf2:clay(0xe0913a), leaf3:clay(0x5f8f3c), trunk:clay(0x8a5a33),
-  pumpkin:clay(0xef8b2c), hay:clay(0xe7c266),
-  feather:clay(0xfdf7ee), comb:clay(0xe0473a), beak:clay(0xf5b93b), shank:clay(0xef9a3c),
+  pumpkin:clay(0xc27530), hay:clay(0xb89b58),
+  feather:clay(0xebe3d6), comb:clay(0xe0473a), beak:clay(0xf5b93b), shank:clay(0xef9a3c),
   shadow:new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:.17})
 };
 function put(p,g,m,pos,scl){
@@ -504,7 +518,9 @@ function animateAurora(t){
 
 /* ====================== 지형 ====================== */
 var world = new THREE.Group(); scene.add(world);
+var curSeed = null;
 function buildWorld(seed){
+  curSeed = seed;
   scene.remove(world);
   world = new THREE.Group(); scene.add(world);
   rnd = mulberry32(seed || 1);
@@ -575,42 +591,730 @@ function buildWorld(seed){
   world.add(aurora.group);
   applyTod();
 
-  // 엔티티 풀 초기화
   for(var id in ents){ if(ents[id].obj) world.add(ents[id].obj); }
 }
 
-/* ====================== 네트워크 상태 ====================== */
-var socket = null, myId = null, isHost = false;
+/* ====================== 게임 상태 (클라이언트) ====================== */
+var myId = null, myName = '', isHost = false, hostId = null, joined = false;
 var ents = {};        // id -> {obj, x,z,ry,mv, alive, shield, exposed, kind}
 var roster = [], phase = 'lobby';
 var myScore = 0, iAmSeeker = false, iAmDead = false, shieldUntil = 0, revealUntil = 0;
 var quiz = null, specIdx = 0;
 
+function isPlayerId(id){ return id.charAt(0) === 'p'; }   // 플레이어 p… / NPC n… / 닭 h…
 function getEnt(id, kind){
   var e = ents[id];
   if(!e){
     var obj = (kind==='hen') ? makeChicken() : makeHuman();
     world.add(obj);
-    e = ents[id] = {obj:obj, x:0, y:0, z:0, ry:0, mv:0, kind:kind,
+    e = ents[id] = {obj:obj, x:0, y:0, z:0, ry:0, mv:0, kind:kind, fresh:true,
                     tx:0, ty:0, tz:0, tRy:0, alive:1, shield:0, exposed:0, seen:0};
   }
   e.seen = Date.now();
   return e;
 }
+function setTarget(e, x, z, ry){
+  e.tx = x; e.tz = z; e.tRy = ry;
+  if(e.fresh){ e.x = x; e.z = z; e.ry = ry; e.fresh = false; }
+}
+function removeEnt(id){
+  if(!ents[id]) return;
+  world.remove(ents[id].obj);
+  delete ents[id];
+}
 function dropStale(){
   var now = Date.now();
   for(var id in ents){
-    if(now - ents[id].seen > 4000){
-      world.remove(ents[id].obj);
-      delete ents[id];
-    }
+    if(id !== myId && now - ents[id].seen > 6000) removeEnt(id);
+  }
+}
+function dropCrowd(){
+  for(var id in ents) if(!isPlayerId(id)) removeEnt(id);
+}
+
+/* ====================== 네트워크 (Pusher) ======================
+   - presence 채널: 누가 방에 있는지 Pusher 가 알려준다 → 가장 먼저 들어온 사람이 방장
+   - 방장 브라우저가 예전 server.js 역할(판정·NPC·문제)을 대신한다
+   - 보낼 것은 큐에 모아서 250ms 마다 한 번에 전송 (Pusher 초당 10회 한도 대비)
+   - 클라이언트 이벤트는 보낸 사람 자신에게는 오지 않으므로, 방장 → 전원 메시지는 로컬에서도 한 번 실행
+   ================================================================ */
+var pusher = null, channel = null;
+var outQ = [], pendingMove = null, pendingState = null;
+
+function sendMyMove(gameData){
+  try{ channel.trigger(EVT, gameData); }catch(err){ console.warn('전송 실패', err); }
+}
+function qSend(name, data, to){ outQ.push(to ? [name, data, to] : [name, data]); }
+function flush(){
+  if(!channel || !channel.subscribed) return;
+  if(channel.members.count < 2){ outQ.length = 0; pendingMove = pendingState = null; return; }  // 혼자면 보낼 필요 없음
+  var items = [], size = 40;
+  if(pendingState){ items.push(['state', pendingState]); size += JSON.stringify(pendingState).length; pendingState = null; }
+  if(pendingMove){ items.push(['move', pendingMove]); size += 60; pendingMove = null; }
+  while(outQ.length){
+    var s = JSON.stringify(outQ[0]).length;
+    if(items.length && size + s > 9000) break;      // Pusher 메시지 1개 최대 10KB
+    items.push(outQ.shift()); size += s;
+  }
+  if(items.length) sendMyMove({f:myId, e:items});
+}
+setInterval(flush, SEND_MS);
+
+function toAll(name, d){ qSend(name, d); onMsg(name, d); }
+function toOne(id, name, d){ if(id === myId) onMsg(name, d); else qSend(name, d, id); }
+function toHost(name, d){ if(isHost && H) hostOn(myId, name, d || {}); else qSend(name, d || {}, 'host'); }
+
+function onPacket(data, meta){
+  var from = (meta && meta.user_id) || (data && data.f);
+  if(!from || !data || !data.e) return;
+  for(var i=0;i<data.e.length;i++){
+    var it = data.e[i], name = it[0], d = it[1], to = it[2];
+    if(name === 'move'){ onPeerMove(from, d); continue; }
+    if(to === 'host'){ if(isHost && H) hostOn(from, name, d || {}); continue; }
+    if(from !== hostId) continue;              // 판정 메시지는 방장 것만 믿는다
+    if(to && to !== myId) continue;            // 다른 사람 앞으로 온 메시지
+    onMsg(name, d);
   }
 }
 
+function channelName(room){
+  var safe = encodeURIComponent(room.toLowerCase()).replace(/[^A-Za-z0-9_\-=@,.;]/g, '.');
+  return 'presence-kkokko-' + safe;
+}
+
+function connect(name, room){
+  if(PUSHER_KEY.indexOf('여기에') === 0 || PUSHER_SECRET.indexOf('여기에') === 0){
+    alert('코드 맨 위의 PUSHER_KEY / PUSHER_SECRET 을 먼저 입력하세요'); return;
+  }
+  if(pusher) return;
+  myName = name;
+  // 시간순으로 정렬되는 id → 가장 작은 id 가 가장 먼저 들어온 사람 = 방장
+  myId = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  el('btnJoin').textContent = '접속 중…';
+  el('btnJoin').disabled = true;
+
+  // 2. 브라우저 자체 인증 (presence 채널이라 channel_data 까지 서명)
+  pusher = new Pusher(PUSHER_KEY, {
+    cluster: PUSHER_CLUSTER,
+    channelAuthorization: {
+      customHandler: function(params, callback){
+        var channelData = JSON.stringify({user_id: myId, user_info: {name: myName}});
+        var stringToSign = params.socketId + ':' + params.channelName + ':' + channelData;
+        var signature = CryptoJS.HmacSHA256(stringToSign, PUSHER_SECRET).toString(CryptoJS.enc.Hex);
+        callback(null, {auth: PUSHER_KEY + ':' + signature, channel_data: channelData});
+      }
+    }
+  });
+
+  // 3. 채널 구독
+  channel = pusher.subscribe(channelName(room));
+
+  channel.bind('pusher:subscription_succeeded', function(members){
+    joined = true;
+    myId = members.me.id;
+    el('gate').style.display = 'none';
+    electHost();
+    if(!isHost) feed('방에 들어왔습니다 — 방장이 시작하기를 기다려요', 'aur');
+  });
+  channel.bind('pusher:subscription_error', function(err){
+    console.error(err);
+    alert('방 접속 실패 — Pusher 키/시크릿, 클러스터(ap3), "Enable client events" 설정을 확인하세요');
+    el('btnJoin').textContent = '들어가기';
+    el('btnJoin').disabled = false;
+    pusher.disconnect(); pusher = null; channel = null;
+  });
+  channel.bind('pusher:member_added', function(m){
+    if(isHost && H) hJoin(m.id, m.info && m.info.name);
+  });
+  channel.bind('pusher:member_removed', function(m){
+    removeEnt(m.id);
+    roster = roster.filter(function(p){ return p.id !== m.id; });
+    electHost();
+    if(isHost && H) hLeave(m.id);
+    renderRoster();
+  });
+
+  // 4. 다른 사람이 보낸 데이터를 받는 통로
+  channel.bind(EVT, onPacket);
+
+  pusher.connection.bind('state_change', function(s){
+    if(joined && (s.current === 'unavailable' || s.current === 'failed'))
+      feed('Pusher 연결이 끊어졌습니다', 'bad');
+  });
+}
+
+function electHost(){
+  var ids = [];
+  channel.members.each(function(m){ ids.push(m.id); });
+  ids.sort();
+  var was = isHost;
+  hostId = ids[0] || myId;
+  isHost = (hostId === myId);
+  el('adminBtn').className = 'adminBtn' + (isHost ? ' on' : '');
+  if(isHost && !was) becomeHost();
+  if(!isHost){ H = null; el('adminPanel').className = 'adminPanel'; }
+}
+
+/* ---------- 받은 메시지 처리 (예전 socket.on 들) ---------- */
+function onPeerMove(from, d){
+  if(from === myId || !d) return;
+  var e = getEnt(from, 'human');
+  setTarget(e, +d.x || 0, +d.z || 0, +d.ry || 0);
+  e.mv = d.mv ? 1 : 0;
+  if(isHost && H){
+    var p = H.players[from];
+    if(p && p.alive) hApplyMove(p, d);
+  }
+}
+
+var HANDLERS = {
+  roster: function(d){
+    var prev = phase;
+    phase = d.phase; roster = d.list; cfg = d.cfg;
+    if(d.seed && d.seed !== curSeed) buildWorld(d.seed);
+    if(prev === 'play' && phase !== 'play'){ hideQuiz(); dropCrowd(); if(aurora) aurora.group.visible = false; }
+    var me = null;
+    for(var i=0;i<roster.length;i++){
+      if(roster[i].id === myId) me = roster[i];
+      var e = ents[roster[i].id];
+      if(e) e.alive = roster[i].alive ? 1 : 0;
+    }
+    if(me){ myScore = me.score; iAmDead = !me.alive && phase==='play'; }
+    el('hScore').textContent = myScore;
+    el('deadbar').className = 'deadbar' + (iAmDead ? ' on' : '');
+    applyTod();
+    if(!isHost) syncCfgInputs();
+    renderRoster();
+  },
+
+  roundStart: function(d){
+    dropCrowd();
+    buildWorld(d.seed);
+    cfg = d.cfg; applyTod();
+    phase = 'play';
+    iAmDead = false; iAmSeeker = false; myScore = 0; specIdx = 0;
+    shieldUntil = 0; revealUntil = 0;
+    var sp = d.spawn && d.spawn[myId];
+    if(sp){ myX = sp[0]; myZ = sp[1]; myRy = Math.atan2(-myX, -myZ); }
+    for(var id in ents) if(isPlayerId(id)) ents[id].alive = 1;
+    hideQuiz();
+    el('result').className = 'result';
+    el('chipSeeker').style.display = 'none';
+    el('deadbar').className = 'deadbar';
+    banner('라운드 시작!', '중앙 오로라가 열리면 달려가세요');
+    feed('라운드 시작!', 'aur');
+  },
+
+  role: function(d){
+    iAmSeeker = !!d.seeker;
+    el('chipSeeker').style.display = iAmSeeker ? 'flex' : 'none';
+    if(iAmSeeker) banner('당신은 술래입니다', '다른 술래가 누군지는 당신도 모릅니다');
+    el('tip').textContent = iAmSeeker
+      ? 'NPC인 척 걷다가 참가자를 노리세요'
+      : '중앙에 오로라가 열리면 달려가서 문제를 푸세요';
+  },
+
+  aurora: function(d){
+    if(aurora) aurora.group.visible = d.open;
+    if(d.open) feed('오로라가 열렸다 — 중앙으로!', 'aur');
+    else if(d.by) feed(d.by + ' 가 먼저 맞혀 오로라가 사라졌다! — 3초 무적', 'gold');
+    else feed('오로라가 닫혔다 — 3초 무적', 'aur');
+    if(!d.open){
+      if(!(quiz && quiz.answered)) hideQuiz();   // 방금 답한 사람은 정답 표시를 잠깐 보여준 뒤 닫힌다
+      shieldUntil = Date.now() + 3000;
+    }
+  },
+
+  quiz: function(q){ showQuiz(q); },
+
+  quizResult: function(d){
+    if(!quiz) return;
+    var kids = el('qOpts').children;
+    for(var i=0;i<kids.length;i++){
+      kids[i].disabled = true;
+      if(i===d.correctIdx) kids[i].className = 'ok';
+    }
+    if(d.ok){
+      myScore = d.score; el('hScore').textContent = myScore;
+      feed('정답! ' + (d.joker ? d.joker.n : ''), 'gold');
+      if(d.joker && d.joker.reveal) revealUntil = Date.now() + 3200;
+      shieldUntil = Date.now() + (d.shield || 3000);
+    } else if(d.timeout){
+      feed('시간 초과!', 'bad');
+      shieldUntil = Date.now() + 3000;
+    } else if(!d.left){
+      feed('오답', 'bad');
+      shieldUntil = Date.now() + 3000;
+    }
+    setTimeout(hideQuiz, 900);
+  },
+
+  swing: function(d){
+    var e = ents[d.id];
+    if(e) e.obj.userData.swingT = .4;
+  },
+
+  kill: function(d){
+    feed(d.text, d.victimId===myId ? 'bad' : (d.byId===myId ? 'gold' : 'good'));
+    var v = ents[d.victimId];
+    if(v){ v.alive = 0; showName(v.obj, d.victimName, d.victimSeeker ? '#ff9c86' : '#ffdf9e'); }
+    var b = ents[d.byId];
+    if(b && d.byId!==d.victimId) showName(b.obj, d.byName, '#ffdf9e');
+  },
+
+  youDied: function(d){
+    iAmDead = true;
+    hideQuiz();
+    banner('탈락', (d.byName||'술래') + ' 에게 당했습니다 — 다음 라운드까지 관전');
+    el('deadbar').className = 'deadbar on';
+  },
+
+  henFly: function(d){                          // 초기 속도만 받아서 각자 화면에서 포물선을 그린다
+    var e = ents[d.id];
+    if(!e) return;
+    e.fly = {x0:d.x0, z0:d.z0, vx:d.vx, vy:d.vy, vz:d.vz, start:Date.now()};
+    e.ry = e.tRy = d.ry;
+  },
+
+  feed: function(d){ feed(d.text, d.kind); },
+
+  state: function(s){
+    phase = s.phase;
+    el('hTime').textContent = fmt(s.timeLeft);
+    if(s.phase === 'play'){
+      el('hAurK').textContent = s.aurOpen ? '오로라 열림' : '다음 오로라';
+      el('hAur').textContent = Math.ceil(s.aurT) + '초';
+    } else { el('hAurK').textContent = '오로라'; el('hAur').textContent = '대기'; }
+    if(aurora) aurora.group.visible = !!s.aurOpen;
+
+    var i, a, e;
+    for(i=0;i<s.P.length;i++){          // [id, alive, shield, exposed] — 위치는 각자 보내는 move 로
+      a = s.P[i];
+      var newP = !ents[a[0]];
+      e = getEnt(a[0], 'human');
+      e.alive = a[1]; e.shield = a[2]; e.exposed = a[3];
+      if(newP && !e.alive) e.dieT = 9;
+    }
+    for(i=0;i<s.N.length;i++){
+      a = s.N[i];
+      var newN = !ents[a[0]];
+      e = getEnt(a[0], 'npc');
+      setTarget(e, a[1], a[2], a[3]); e.mv = a[4]; e.alive = a[5] ? 0 : 1;
+      if(newN && !e.alive) e.dieT = 9;             // 늦게 들어온 사람에겐 이미 쓰러진 상태로
+    }
+    for(i=0;i<s.H.length;i++){
+      a = s.H[i];
+      e = getEnt(a[0], 'hen');
+      setTarget(e, a[1], a[3], a[4]); e.ty = a[2]; e.mv = a[5];
+    }
+  },
+
+  roundEnd: function(d){
+    phase = 'over';
+    hideQuiz();
+    if(aurora) aurora.group.visible = false;
+    dropCrowd();
+    var ol = el('resList'); ol.innerHTML = '';
+    var weak = '';
+    for(var i=0;i<d.scores.length;i++){
+      var p = d.scores[i];
+      var li = document.createElement('li');
+      if(p.id===myId){ li.className = 'me'; weak = p.weak && p.weak.length ? p.weak.join(' / ') : ''; }
+      var rk = document.createElement('span'); rk.className='rk'; rk.textContent = (i+1);
+      var nm = document.createElement('span');
+      nm.textContent = p.name + (p.seeker ? ' (술래)' : '') + (p.alive ? '' : ' · 탈락');
+      var sc = document.createElement('span'); sc.className='sc'; sc.textContent = p.score;
+      li.appendChild(rk); li.appendChild(nm); li.appendChild(sc);
+      ol.appendChild(li);
+    }
+    el('resTitle').textContent = d.reason==='hiders' ? '참가자 승리!' :
+      (d.reason==='seekers' ? '술래 승리!' : '라운드 종료');
+    el('resWeak').textContent = weak ? ('내가 약한 유형 : ' + weak) : '오답 없음 — 잘했어요!';
+    el('result').className = 'result on';
+    el('deadbar').className = 'deadbar';
+  },
+
+  kicked: function(){
+    banner('방에서 나왔습니다', '방장이 내보냈습니다. 새로고침하면 다시 들어갈 수 있습니다.');
+    joined = false;
+    if(pusher) pusher.disconnect();
+  }
+};
+function onMsg(name, d){ var f = HANDLERS[name]; if(f) f(d); }
+
+/* ====================== 방장 (예전 server.js) ====================== */
+var H = null;
+var NICKS = ['치킨무','삐약이','깃털도둑','푸드덕','홰치기','촉촉이','꼬끼오','병아리대장'];
+var JOKERS = [
+  { n: '🔍 AI 감별기', d: '3초간 술래가 빨갛게 보입니다', reveal: true },
+  { n: '🪶 깃털 위장', d: '술래가 잠시 놓칩니다' },
+  { n: '🥚 알 함정',  d: '술래를 느리게 만듭니다' }
+];
+function ri(a, b){ return a + Math.floor(Math.random() * (b - a + 1)); }
+function r2(v){ return Math.round(v * 100) / 100; }
+
+function makeQuestion(){
+  var k = ri(0, 3), a, b, ans, txt, type;
+  if(k === 0)      { a = ri(13, 89); b = ri(6, 59);    ans = a + b; txt = a + ' + ' + b; type = '덧셈'; }
+  else if(k === 1) { a = ri(31, 99); b = ri(6, a - 5); ans = a - b; txt = a + ' − ' + b; type = '뺄셈'; }
+  else if(k === 2) { a = ri(3, 9);   b = ri(3, 9);     ans = a * b; txt = a + ' × ' + b; type = '곱셈'; }
+  else             { b = ri(2, 9);   ans = ri(2, 9);   a = b * ans; txt = a + ' ÷ ' + b; type = '나눗셈'; }
+  var set = [ans], guard = 0;
+  while(set.length < 4 && guard++ < 80){
+    var span = (k === 2 || k === 3) ? 6 : 9;
+    var v = ans + ri(1, span) * (Math.random() < 0.5 ? -1 : 1);
+    if(v > 0 && set.indexOf(v) < 0) set.push(v);
+  }
+  while(set.length < 4) set.push(ans + set.length * 11);
+  var order = [0,1,2,3];
+  for(var i=3;i>0;i--){ var j = Math.floor(Math.random()*(i+1)); var t = order[i]; order[i] = order[j]; order[j] = t; }
+  return { text: txt + ' = ?', choices: order.map(function(i){ return String(set[i]); }), ansIdx: order.indexOf(0), type: type };
+}
+function spreadPos(){
+  var t = Math.random() * Math.PI * 2, r = MAP_R * Math.sqrt(Math.random()) * 0.96;
+  return { x: Math.cos(t) * r, z: Math.sin(t) * r };
+}
+function wander(o){
+  var t = Math.random() * Math.PI * 2, r = Math.random() * MAP_R * 0.85;
+  o.tx = Math.cos(t) * r; o.tz = Math.sin(t) * r; o.wait = 0.6 + Math.random() * 3.2;
+  return o;
+}
+
+function becomeHost(){
+  var wasPlaying = (phase === 'play');
+  H = {phase:'lobby', seed: curSeed || 1, players:{}, npcs:[], hens:[], kicked:{},
+       timeLeft:cfg.round, aurOpen:false, aurT:0, stateAcc:0, rosterAcc:0, rosterDirty:true};
+  channel.members.each(function(m){ hAdd(m.id, m.info && m.info.name); });
+  feed(wasPlaying ? '방장이 나가서 라운드를 중지했습니다 — 이제 내가 방장' : '방장이 되었습니다', 'gold');
+  syncCfgInputs();
+  hRoster();
+}
+function hAdd(id, name){
+  if(H.players[id]) return H.players[id];
+  var pos = spreadPos();
+  return H.players[id] = {
+    id:id, name:String(name||'').slice(0,10) || NICKS[ri(0, NICKS.length-1)],
+    x:pos.x, z:pos.z, ry:0, mv:0, alive:H.phase !== 'play', seeker:false, score:0, asked:0, wrong:{},
+    shieldUntil:0, quizCoolUntil:0, exposedUntil:0, swingUntil:0, quiz:null, lastMove:Date.now()
+  };
+}
+function hJoin(id, name){
+  if(H.kicked[id]) return;
+  hAdd(id, name);
+  if(H.phase === 'play') toOne(id, 'feed', {text:'라운드 진행 중 — 다음 라운드부터 참여합니다', kind:'aur'});
+  hRoster();
+}
+function hLeave(id){ delete H.players[id]; H.rosterDirty = true; }
+function hKick(id){
+  if(!H || id === myId) return;
+  toOne(id, 'kicked', {});
+  H.kicked[id] = 1;
+  delete H.players[id];
+  hRoster();
+}
+function hApplyMove(p, d){
+  var now = Date.now();
+  var dt = Math.max(0.05, Math.min(1, (now - p.lastMove) / 1000));
+  p.lastMove = now;
+  var nx = +d.x, nz = +d.z;
+  if(!isFinite(nx) || !isFinite(nz)) return;
+  var maxStep = BASE_SPEED * cfg.speed * 3.2 * dt;          // 순간이동 방지
+  var dx = nx - p.x, dz = nz - p.z, dist = Math.hypot(dx, dz);
+  if(dist > maxStep){ p.x += dx/dist*maxStep; p.z += dz/dist*maxStep; } else { p.x = nx; p.z = nz; }
+  var rr = Math.hypot(p.x, p.z);
+  if(rr > MAP_R){ p.x *= MAP_R/rr; p.z *= MAP_R/rr; }
+  p.ry = +d.ry || 0; p.mv = d.mv ? 1 : 0;
+}
+function hRoster(){
+  var list = [];
+  for(var id in H.players){
+    var p = H.players[id];
+    list.push({id:p.id, name:p.name, alive:p.alive?1:0, score:p.score, host:p.id===myId, seeker:p.seeker?1:0});
+  }
+  H.rosterDirty = false; H.rosterAcc = 0;
+  toAll('roster', {phase:H.phase, list:list, cfg:cfg, seed:H.seed});
+}
+
+function hStart(){
+  var ids = Object.keys(H.players);
+  if(!ids.length) return;
+  H.phase = 'play';
+  H.seed = Math.floor(Math.random() * 1e9) + 1;
+  H.timeLeft = cfg.round;
+  H.aurOpen = false;
+  H.aurT = Math.min(8, cfg.gap);
+  H.npcs = []; H.hens = [];
+  var i, pos;
+  for(i=0;i<cfg.npc;i++){
+    pos = spreadPos();
+    H.npcs.push(wander({id:'n'+i, x:pos.x, z:pos.z, ry:Math.random()*6.28, mv:0, aurWilling:Math.random()<0.3, goAur:false}));
+  }
+  for(i=0;i<cfg.hens;i++){
+    pos = spreadPos();
+    H.hens.push(wander({id:'h'+i, x:pos.x, y:0, z:pos.z, ry:0, fly:null}));
+  }
+  for(i=ids.length-1;i>0;i--){ var j = Math.floor(Math.random()*(i+1)); var t = ids[i]; ids[i] = ids[j]; ids[j] = t; }
+  var nSeek = Math.max(1, Math.min(cfg.seekers, Math.max(1, ids.length - 1)));
+  var spawn = {};
+  ids.forEach(function(id, idx){
+    var p = H.players[id], ps = spreadPos();
+    p.x = ps.x; p.z = ps.z; p.ry = Math.atan2(-p.x, -p.z); p.mv = 0;
+    p.alive = true; p.seeker = ids.length > 1 ? idx < nSeek : false;
+    p.score = 0; p.asked = 0; p.wrong = {};
+    p.shieldUntil = 0; p.quiz = null; p.quizCoolUntil = 0; p.exposedUntil = 0; p.swingUntil = 0;
+    p.lastMove = Date.now();
+    spawn[id] = [r2(p.x), r2(p.z)];
+  });
+  toAll('roundStart', {seed:H.seed, cfg:cfg, timeLeft:H.timeLeft, spawn:spawn});
+  ids.forEach(function(id){ toOne(id, 'role', {seeker:H.players[id].seeker}); });   // 역할은 본인에게만
+  hRoster();
+}
+
+function hEnd(reason){
+  if(H.phase !== 'play') return;
+  H.phase = 'over';
+  H.aurOpen = false;
+  var scores = [];
+  for(var id in H.players){
+    var p = H.players[id];
+    p.quiz = null;
+    var eras = Object.keys(p.wrong).sort(function(a, b){ return p.wrong[b] - p.wrong[a]; });
+    scores.push({id:p.id, name:p.name, score:p.score, alive:p.alive, seeker:p.seeker, asked:p.asked,
+                 weak:eras.slice(0, 2).map(function(k){ return k + ' ' + p.wrong[k] + '회'; })});
+  }
+  scores.sort(function(a, b){ return b.score - a.score; });
+  H.npcs = []; H.hens = [];
+  toAll('roundEnd', {reason:reason, scores:scores});
+  hRoster();
+}
+
+function closeQuiz(p, how){
+  if(!p.quiz) return;
+  var q = p.quiz.q;
+  if(how === 'timeout'){
+    p.wrong[q.type] = (p.wrong[q.type] || 0) + 1;
+    toOne(p.id, 'quizResult', {ok:false, timeout:true, correctIdx:q.ansIdx, score:p.score});
+    p.shieldUntil = Math.max(p.shieldUntil, Date.now() + SHIELD_MS);
+    p.quizCoolUntil = Date.now() + QUIZ_CD;
+  } else {
+    toOne(p.id, 'quizResult', {ok:false, left:true, correctIdx:q.ansIdx, score:p.score});
+  }
+  p.quiz = null;
+}
+
+function hCloseAurora(byName){
+  var now = Date.now();
+  H.aurOpen = false;
+  H.aurT = cfg.gap;
+  toAll('aurora', {open:false, t:H.aurT, by:byName || null});
+  for(var id in H.players){
+    var p = H.players[id];
+    if(!p.alive) continue;
+    p.shieldUntil = Math.max(p.shieldUntil, now + SHIELD_MS);   // 닫히는 순간 모두 3초 무적
+    if(p.quiz) closeQuiz(p, 'closed');
+  }
+}
+
+function hostOn(from, name, d){
+  var p = H.players[from];
+  if(!p) return;
+  if(name === 'answer') hAnswer(p, d);
+  else if(name === 'swing') hSwing(p);
+}
+function hAnswer(me, d){
+  if(!me.quiz || d.id !== me.quiz.id) return;
+  var q = me.quiz.q, ok = Number(d.idx) === q.ansIdx, now = Date.now();
+  if(ok) me.score += 1;
+  else me.wrong[q.type] = (me.wrong[q.type] || 0) + 1;
+  me.quiz = null;
+  me.shieldUntil = Math.max(me.shieldUntil, now + SHIELD_MS);
+  me.quizCoolUntil = now + QUIZ_CD;
+  toOne(me.id, 'quizResult', {ok:ok, correctIdx:q.ansIdx, score:me.score,
+        joker: ok ? JOKERS[ri(0, JOKERS.length-1)] : null, shield:SHIELD_MS});
+  H.rosterDirty = true;
+  if(ok && H.aurOpen) hCloseAurora(me.name);     // 가장 먼저 맞힌 사람이 나오면 오로라 삭제
+}
+function hSwing(me){
+  if(!me.alive || H.phase !== 'play') return;
+  var now = Date.now();
+  if(now < me.swingUntil) return;
+  me.swingUntil = now + SWING_CD;
+  toAll('swing', {id:me.id});
+
+  var fx = Math.sin(me.ry), fz = Math.cos(me.ry);
+  function facing(x, z, range, cone){
+    var dx = x - me.x, dz = z - me.z, d = Math.hypot(dx, dz);
+    if(d > range) return -1;
+    if((dx*fx + dz*fz) / (d || 1) < cone) return -1;
+    return d;
+  }
+  var id, d, best, target = null;
+  // 1) 사람
+  best = 99;
+  for(id in H.players){
+    var p = H.players[id];
+    if(p.id === me.id || !p.alive) continue;
+    d = facing(p.x, p.z, SWING_RANGE, 0.3);
+    if(d >= 0 && d < best){ best = d; target = p; }
+  }
+  if(target){
+    if(target.shieldUntil > now){ toOne(me.id, 'feed', {kind:'bad', text:target.name + ' 는 무적 상태였다'}); return; }
+    target.alive = false;
+    if(target.quiz) target.quiz = null;
+    var text;
+    if(target.seeker && !me.seeker){ me.score += 3; text = me.name + ' 가 술래 ' + target.name + ' 를 잡았다!'; }
+    else if(me.seeker)             { me.score += 2; text = target.name + ' 가 당했다'; }
+    else                           { me.score -= 2; text = me.name + ' 가 무고한 ' + target.name + ' 를 쳤다…'; }
+    toAll('kill', {byId:me.id, byName:me.name, victimId:target.id, victimName:target.name, victimSeeker:target.seeker, text:text});
+    toOne(target.id, 'youDied', {byName:me.name});
+    hRoster();
+    return;
+  }
+  // 2) NPC (벌점)
+  var npc = null; best = 99;
+  for(var i=0;i<H.npcs.length;i++){
+    if(H.npcs[i].dead) continue;
+    d = facing(H.npcs[i].x, H.npcs[i].z, SWING_RANGE, 0.3);
+    if(d >= 0 && d < best){ best = d; npc = H.npcs[i]; }
+  }
+  if(npc){
+    npc.dead = true; npc.mv = 0;
+    if(!me.seeker){                                   // 술래가 아닌 사람만 개인 점수 감점
+      me.score -= 1;
+      toOne(me.id, 'feed', {kind:'bad', text:'NPC를 쓰러뜨렸다! 내 점수 -1'});
+      H.rosterDirty = true;
+    } else toOne(me.id, 'feed', {kind:'good', text:'NPC를 쓰러뜨렸다'});
+    return;
+  }
+  // 3) 닭 — 날려보낸다
+  var hen = null; best = 99;
+  for(i=0;i<H.hens.length;i++){
+    d = facing(H.hens[i].x, H.hens[i].z, HEN_RANGE, 0.2);
+    if(d >= 0 && d < best){ best = d; hen = H.hens[i]; }
+  }
+  if(hen){
+    var hAng = Math.atan2(fx, fz) + (Math.random()-.5)*.6, hSp = 7 + Math.random()*3;
+    hen.fly = {x0:hen.x, z0:hen.z, vx:Math.sin(hAng)*hSp, vy:24 + Math.random()*6, vz:Math.cos(hAng)*hSp, t:0};
+    hen.ry = hAng;
+    toAll('henFly', {id:hen.id, x0:r2(hen.x), z0:r2(hen.z), vx:r2(hen.fly.vx), vy:r2(hen.fly.vy), vz:r2(hen.fly.vz), ry:r2(hAng)});
+    toOne(me.id, 'feed', {kind:'gold', text:'꼬꼬댁!! 닭이 날아갔다'});
+    return;
+  }
+  toOne(me.id, 'feed', {kind:'bad', text:'허공을 쳤다'});
+}
+
+function hostTick(dt){
+  var now = Date.now(), id, p;
+  if(H.phase === 'play'){
+    H.timeLeft -= dt;
+
+    /* 오로라 개폐 */
+    H.aurT -= dt;
+    if(H.aurT <= 0){
+      if(H.aurOpen) hCloseAurora(null);
+      else { H.aurOpen = true; H.aurT = cfg.window; toAll('aurora', {open:true, t:H.aurT}); }
+    }
+
+    /* 퀴즈 발급 / 시간 초과 (전송 지연을 감안해 0.5초 여유) */
+    for(id in H.players){
+      p = H.players[id];
+      if(!p.alive) continue;
+      var inZone = H.aurOpen && Math.hypot(p.x, p.z) < ZONE_R;
+      if(p.quiz){
+        if(now > p.quiz.until + 500) closeQuiz(p, 'timeout');
+        else if(!inZone) closeQuiz(p, 'left');
+      } else if(inZone && now > p.quizCoolUntil){
+        var q = makeQuestion();
+        p.quiz = {q:q, until: now + cfg.limit*1000, id:'q' + now + Math.random().toString(36).slice(2, 6)};
+        p.asked++;
+        toOne(p.id, 'quiz', {id:p.quiz.id, text:q.text, choices:q.choices, type:q.type, limit:cfg.limit});
+      }
+    }
+
+    /* NPC 군중 */
+    var npcSpeed = BASE_SPEED * cfg.speed;
+    H.npcs.forEach(function(n){
+      if(n.dead) return;
+      if(H.aurOpen && n.aurWilling && !n.goAur && Math.random() < dt * 0.12) n.goAur = true;
+      if(!H.aurOpen) n.goAur = false;
+      var tx, tz;
+      if(n.goAur){
+        var a = (parseInt(n.id.slice(1), 10) % 16) / 16 * Math.PI * 2;
+        tx = Math.cos(a) * ZONE_R * 0.6; tz = Math.sin(a) * ZONE_R * 0.6;
+      } else {
+        n.wait -= dt;
+        if(n.wait <= 0 || Math.hypot(n.tx - n.x, n.tz - n.z) < 1.5) wander(n);
+        tx = n.tx; tz = n.tz;
+      }
+      var dx = tx - n.x, dz = tz - n.z, d = Math.hypot(dx, dz);
+      if(d > 0.5){
+        var sp = (n.goAur ? npcSpeed * 0.95 : npcSpeed * 0.55) * dt;
+        n.x += dx/d*sp; n.z += dz/d*sp; n.ry = Math.atan2(dx, dz); n.mv = 1;
+      } else n.mv = 0;
+    });
+
+    /* 닭 */
+    H.hens.forEach(function(h){
+      if(h.fly){
+        var f = h.fly; f.t += dt;                  // 포물선: y = vy·t − g·t²/2
+        h.x = f.x0 + f.vx*f.t; h.z = f.z0 + f.vz*f.t; h.y = f.vy*f.t - HEN_G/2*f.t*f.t;
+        if(h.y <= 0 && f.t > .2){
+          h.y = 0;
+          var rr = Math.hypot(h.x, h.z);
+          if(rr > MAP_R-2){ h.x *= (MAP_R-2)/rr; h.z *= (MAP_R-2)/rr; }
+          h.fly = null; wander(h);
+        }
+      } else {
+        h.wait -= dt;
+        if(h.wait <= 0 || Math.hypot(h.tx - h.x, h.tz - h.z) < 1) wander(h);
+        var dx = h.tx - h.x, dz = h.tz - h.z, d = Math.hypot(dx, dz);
+        if(d > 0.4){ var sp = 1.5*dt; h.x += dx/d*sp; h.z += dz/d*sp; h.ry = Math.atan2(dx, dz); }
+      }
+    });
+
+    /* 종료 조건 */
+    var aliveHider = 0, aliveSeeker = 0, n = 0;
+    for(id in H.players){ n++; p = H.players[id]; if(p.alive){ if(p.seeker) aliveSeeker++; else aliveHider++; } }
+    if(H.timeLeft <= 0) hEnd('time');
+    else if(n > 1 && aliveHider === 0) hEnd('seekers');
+    else if(n > 1 && aliveSeeker === 0) hEnd('hiders');
+  }
+
+  /* 상태 — 전송 주기에 맞춰 만든다 */
+  if(H.phase === 'play'){
+    H.stateAcc += dt;
+    if(H.stateAcc >= SEND_MS/1000){
+      H.stateAcc = 0;
+      var P = [];
+      for(id in H.players){
+        p = H.players[id];
+        P.push([p.id, p.alive?1:0, p.shieldUntil > now ? 1 : 0, p.exposedUntil > now ? 1 : 0]);
+      }
+      var s = {phase:H.phase, timeLeft:Math.max(0, H.timeLeft), aurOpen:H.aurOpen, aurT:Math.max(0, H.aurT), P:P,
+        N:H.npcs.map(function(n){ return [n.id, r2(n.x), r2(n.z), r2(n.ry), n.mv?1:0, n.dead?1:0]; }),
+        H:H.hens.map(function(h){ return [h.id, r2(h.x), r2(h.y), r2(h.z), r2(h.ry), h.fly?1:0]; })};
+      pendingState = s;
+      onMsg('state', s);
+    }
+  }
+
+  /* 명단 — 바뀌었으면 0.5초 안에, 아니어도 3초마다 (늦게 온 사람 동기화) */
+  H.rosterAcc += dt;
+  if((H.rosterDirty && H.rosterAcc > .5) || H.rosterAcc > 3) hRoster();
+}
+/* rAF 는 탭이 가려지면 멈추므로 방장 판정은 setInterval 로 돌린다 */
+var hLast = Date.now();
+setInterval(function(){
+  var now = Date.now(), dt = Math.min(1, (now - hLast) / 1000);
+  hLast = now;
+  if(isHost && H) hostTick(dt);
+}, 66);
+
 /* ====================== 입력 ====================== */
-var keys = {}, yaw = 0, dragging = false, lastX = 0;
+var keys = {}, yaw = 0, camPtr = null, lastX = 0, lastY = 0, camH = 5.6;
 var myX = 0, myZ = 0, myRy = 0, myMv = 0;
 addEventListener('keydown', function(e){
+  if(e.target && e.target.tagName === 'INPUT') return;
   var k = e.key.toLowerCase();
   if(['arrowup','arrowdown','arrowleft','arrowright',' '].indexOf(k)>=0) e.preventDefault();
   if(k===' ' && !keys[' ']) doSwing();
@@ -618,18 +1322,31 @@ addEventListener('keydown', function(e){
   keys[k] = true;
 });
 addEventListener('keyup', function(e){ keys[e.key.toLowerCase()] = false; });
-canvas.addEventListener('pointerdown', function(e){ dragging=true; lastX=e.clientX; canvas.setPointerCapture(e.pointerId); });
-canvas.addEventListener('pointerup', function(){ dragging=false; });
-canvas.addEventListener('pointercancel', function(){ dragging=false; });
+/* 시점: 화면(조이스틱 밖)을 한 손가락으로 끌면 좌우 회전 + 위아래로 카메라 높이.
+   조이스틱을 누른 채 다른 손가락으로 끌어도 따로 동작한다 */
+canvas.addEventListener('pointerdown', function(e){
+  if(camPtr !== null) return;
+  camPtr = e.pointerId; lastX = e.clientX; lastY = e.clientY;
+  try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
+});
+function camRelease(e){ if(e.pointerId === camPtr) camPtr = null; }
+canvas.addEventListener('pointerup', camRelease);
+canvas.addEventListener('pointercancel', camRelease);
+canvas.addEventListener('lostpointercapture', camRelease);
 canvas.addEventListener('pointermove', function(e){
-  if(!dragging) return;
-  yaw -= (e.clientX-lastX)*.006; lastX = e.clientX;
+  if(e.pointerId !== camPtr) return;
+  var sens = e.pointerType === 'touch' ? .011 : .006;
+  yaw -= (e.clientX-lastX)*sens;
+  camH = Math.max(2.4, Math.min(14, camH + (e.clientY-lastY)*.03));
+  lastX = e.clientX; lastY = e.clientY;
 });
 var stick = el('stick'), nub = el('nub'), sv = {x:0,y:0}, stickId = null;
 if(matchMedia('(pointer:coarse)').matches) document.body.classList.add('touch');
 stick.addEventListener('pointerdown', function(e){ stickId=e.pointerId; stick.setPointerCapture(e.pointerId); moveStick(e); });
 stick.addEventListener('pointermove', function(e){ if(stickId===e.pointerId) moveStick(e); });
-stick.addEventListener('pointerup', function(){ stickId=null; sv.x=sv.y=0; nub.style.transform=''; });
+function stickRelease(){ stickId=null; sv.x=sv.y=0; nub.style.transform=''; }
+stick.addEventListener('pointerup', stickRelease);
+stick.addEventListener('pointercancel', stickRelease);
 function moveStick(e){
   var r = stick.getBoundingClientRect();
   var dx = e.clientX-(r.left+r.width/2), dy = e.clientY-(r.top+r.height/2);
@@ -640,8 +1357,8 @@ function moveStick(e){
 }
 el('btnSwing').addEventListener('click', doSwing);
 function doSwing(){
-  if(!socket || iAmDead || phase!=='play') return;
-  socket.emit('swing');
+  if(!joined || iAmDead || phase!=='play') return;
+  toHost('swing');
 }
 
 /* ====================== UI ====================== */
@@ -677,6 +1394,7 @@ function renderRoster(){
 }
 function renderAdminList(){
   var ul = el('aList'); if(!ul) return;
+  if(el('adminPanel').className.indexOf('on') < 0) return;
   ul.innerHTML = '';
   for(var i=0;i<roster.length;i++){
     (function(p){
@@ -691,7 +1409,7 @@ function renderAdminList(){
       right.appendChild(sc);
       if(isHost && p.id !== myId){
         var k = document.createElement('button'); k.className='kick'; k.textContent='강퇴';
-        k.addEventListener('click', function(){ socket.emit('admin:kick', {id:p.id}); });
+        k.addEventListener('click', function(){ hKick(p.id); });
         right.appendChild(k);
       }
       li.appendChild(who); li.appendChild(st); li.appendChild(right);
@@ -721,187 +1439,7 @@ function hideQuiz(){ el('qbar').style.display = 'none'; quiz = null; }
 function answer(idx){
   if(!quiz || quiz.answered) return;
   quiz.answered = true;
-  socket.emit('answer', {id:quiz.id, idx:idx});
-}
-
-/* ====================== 소켓 ====================== */
-function connect(name, room){
-  socket = io();
-  socket.on('connect', function(){ socket.emit('join', {name:name, room:room}); });
-
-  socket.on('welcome', function(d){
-    myId = d.you; isHost = !!d.host; phase = d.phase;
-    MAP_R = d.mapR; ZONE_R = d.zoneR; BASE_SPEED = d.baseSpeed;
-    cfg = d.cfg;
-    buildWorld(d.seed);
-    syncCfgInputs();
-    el('adminBtn').className = 'adminBtn' + (isHost ? ' on' : '');
-    el('gate').style.display = 'none';
-    if(d.joinedMidRound) feed('라운드 진행 중 — 다음 라운드부터 참여합니다', 'aur');
-  });
-
-  socket.on('youAreHost', function(){
-    isHost = true;
-    el('adminBtn').className = 'adminBtn on';
-    feed('방장이 되었습니다', 'gold');
-    renderAdminList();
-  });
-
-  socket.on('cfg', function(c){ cfg = c; applyTod(); syncCfgInputs(); });
-
-  socket.on('roster', function(d){
-    phase = d.phase; roster = d.list; cfg = d.cfg;
-    var me = null;
-    for(var i=0;i<roster.length;i++) if(roster[i].id===myId) me = roster[i];
-    if(me){ myScore = me.score; iAmDead = !me.alive && phase==='play'; }
-    el('hScore').textContent = myScore;
-    el('deadbar').className = 'deadbar' + (iAmDead ? ' on' : '');
-    renderRoster();
-  });
-
-  socket.on('roundStart', function(d){
-    buildWorld(d.seed);
-    cfg = d.cfg; applyTod();
-    iAmDead = false; iAmSeeker = false; myScore = 0; specIdx = 0;
-    shieldUntil = 0; revealUntil = 0;
-    hideQuiz();
-    el('result').className = 'result';
-    el('chipSeeker').style.display = 'none';
-    el('deadbar').className = 'deadbar';
-    banner('라운드 시작!', '중앙 오로라가 열리면 달려가세요');
-    feed('라운드 시작!', 'aur');
-  });
-
-  socket.on('role', function(d){
-    iAmSeeker = !!d.seeker;
-    el('chipSeeker').style.display = iAmSeeker ? 'flex' : 'none';
-    if(iAmSeeker) banner('당신은 술래입니다', '다른 술래가 누군지는 당신도 모릅니다');
-    el('tip').textContent = iAmSeeker
-      ? 'NPC인 척 걷다가 참가자를 노리세요'
-      : '중앙에 오로라가 열리면 달려가서 문제를 푸세요';
-  });
-
-  socket.on('aurora', function(d){
-    if(aurora) aurora.group.visible = d.open;
-    feed(d.open ? '오로라가 열렸다 — 중앙으로!' : '오로라가 닫혔다 — 3초 무적', 'aur');
-    if(!d.open){ hideQuiz(); shieldUntil = Date.now() + 3000; }
-  });
-
-  socket.on('quiz', function(q){ showQuiz(q); });
-
-  socket.on('quizResult', function(d){
-    if(!quiz){ return; }
-    var kids = el('qOpts').children;
-    for(var i=0;i<kids.length;i++){
-      kids[i].disabled = true;
-      if(i===d.correctIdx) kids[i].className = 'ok';
-    }
-    if(d.ok){
-      myScore = d.score; el('hScore').textContent = myScore;
-      feed('정답! ' + (d.joker ? d.joker.n : ''), 'gold');
-      if(d.joker && d.joker.reveal) revealUntil = Date.now() + 3200;
-      shieldUntil = Date.now() + (d.shield || 3000);
-    } else if(d.timeout){
-      feed('시간 초과!', 'bad');
-      shieldUntil = Date.now() + 3000;
-    } else if(!d.left){
-      feed('오답', 'bad');
-      shieldUntil = Date.now() + 3000;
-    }
-    setTimeout(hideQuiz, 900);
-  });
-
-  socket.on('swing', function(d){
-    var e = ents[d.id];
-    if(e) e.obj.userData.swingT = .4;
-  });
-
-  socket.on('kill', function(d){
-    feed(d.text, d.victimId===myId ? 'bad' : (d.byId===myId ? 'gold' : 'good'));
-    var v = ents[d.victimId];
-    if(v) showName(v.obj, d.victimName, d.victimSeeker ? '#ff9c86' : '#ffdf9e');
-    var b = ents[d.byId];
-    if(b && d.byId!==d.victimId) showName(b.obj, d.byName, '#ffdf9e');
-  });
-
-  socket.on('youDied', function(d){
-    iAmDead = true;
-    hideQuiz();
-    banner('탈락', (d.byName||'술래') + ' 에게 당했습니다 — 다음 라운드까지 관전');
-    el('deadbar').className = 'deadbar on';
-  });
-
-  socket.on('henFly', function(){ /* 서버 좌표로 이미 날아간다 */ });
-
-  socket.on('feed', function(d){ feed(d.text, d.kind); });
-
-  socket.on('state', function(s){
-    phase = s.phase;
-    el('hTime').textContent = fmt(s.timeLeft);
-    if(s.phase === 'play'){
-      el('hAurK').textContent = s.aurOpen ? '오로라 열림' : '다음 오로라';
-      el('hAur').textContent = Math.ceil(s.aurT) + '초';
-    } else { el('hAurK').textContent = '오로라'; el('hAur').textContent = '대기'; }
-    if(aurora) aurora.group.visible = !!s.aurOpen;
-
-    var i, a, e;
-    for(i=0;i<s.P.length;i++){
-      a = s.P[i];
-      e = getEnt(a[0], 'human');
-      e.alive = a[5]; e.shield = a[6]; e.exposed = a[7];
-      if(a[0] === myId){
-        // 내 캐릭터는 로컬 예측을 쓰되, 크게 어긋나면 서버 값으로 스냅
-        if(Math.hypot(a[1]-myX, a[2]-myZ) > 6){ myX = a[1]; myZ = a[2]; }
-        e.tx = myX; e.tz = myZ; e.tRy = myRy; e.mv = myMv;
-      } else {
-        e.tx = a[1]; e.tz = a[2]; e.tRy = a[3]; e.mv = a[4];
-      }
-      e.obj.visible = !!a[5];
-    }
-    for(i=0;i<s.N.length;i++){
-      a = s.N[i];
-      e = getEnt(a[0], 'npc');
-      e.tx = a[1]; e.tz = a[2]; e.tRy = a[3]; e.mv = a[4]; e.alive = 1;
-      e.obj.visible = true;
-    }
-    for(i=0;i<s.H.length;i++){
-      a = s.H[i];
-      e = getEnt(a[0], 'hen');
-      e.tx = a[1]; e.ty = a[2]; e.tz = a[3]; e.tRy = a[4]; e.mv = a[5];
-      e.obj.visible = true;
-    }
-    dropStale();
-  });
-
-  socket.on('roundEnd', function(d){
-    phase = 'over';
-    hideQuiz();
-    var ol = el('resList'); ol.innerHTML = '';
-    var weak = '';
-    for(var i=0;i<d.scores.length;i++){
-      var p = d.scores[i];
-      var li = document.createElement('li');
-      if(p.id===myId){ li.className = 'me'; weak = p.weak && p.weak.length ? p.weak.join(' / ') : ''; }
-      var rk = document.createElement('span'); rk.className='rk'; rk.textContent = (i+1);
-      var nm = document.createElement('span');
-      nm.textContent = p.name + (p.seeker ? ' (술래)' : '') + (p.alive ? '' : ' · 탈락');
-      var sc = document.createElement('span'); sc.className='sc'; sc.textContent = p.score;
-      li.appendChild(rk); li.appendChild(nm); li.appendChild(sc);
-      ol.appendChild(li);
-    }
-    el('resTitle').textContent = d.reason==='hiders' ? '참가자 승리!' :
-      (d.reason==='seekers' ? '술래 승리!' : '라운드 종료');
-    el('resWeak').textContent = weak ? ('내가 약한 유형 : ' + weak) : '오답 없음 — 잘했어요!';
-    el('result').className = 'result on';
-    el('deadbar').className = 'deadbar';
-  });
-
-  socket.on('kicked', function(){
-    banner('방에서 나왔습니다', '방장이 내보냈습니다. 새로고침하면 다시 들어갈 수 있습니다.');
-    socket.disconnect();
-  });
-
-  socket.on('disconnect', function(){ feed('서버와 연결이 끊어졌습니다', 'bad'); });
+  toHost('answer', {id:quiz.id, idx:idx});
 }
 
 function banner(title, text){
@@ -911,7 +1449,7 @@ function banner(title, text){
   setTimeout(function(){ el('banner').className = 'banner'; }, 2600);
 }
 
-/* ====================== 관리자 패널 ====================== */
+/* ====================== 관리자 패널 (방장 브라우저에서 바로 실행) ====================== */
 el('adminBtn').addEventListener('click', function(){
   var p = el('adminPanel');
   p.className = p.className.indexOf('on')>=0 ? 'adminPanel' : 'adminPanel on';
@@ -931,7 +1469,7 @@ function syncCfgInputs(){
   for(var i=0;i<CFG_FIELDS.length;i++){
     var f = CFG_FIELDS[i];
     var input = el(f[0]);
-    if(!input) continue;
+    if(!input || cfg[f[2]] == null) continue;
     input.value = cfg[f[2]];
     el(f[1]).textContent = f[3](cfg[f[2]]);
   }
@@ -941,16 +1479,17 @@ for(var i=0;i<CFG_FIELDS.length;i++){
     var input = el(f[0]);
     if(!input) return;
     input.addEventListener('input', function(){
+      if(!isHost) return;
       cfg[f[2]] = +input.value;
       el(f[1]).textContent = f[3](input.value);
     });
     input.addEventListener('change', function(){
-      if(socket && isHost) socket.emit('admin:cfg', cfg);
+      if(isHost && H) H.rosterDirty = true;     // 설정은 명단에 실려 전원에게 간다
     });
   })(CFG_FIELDS[i]);
 }
-el('btnStart').addEventListener('click', function(){ if(socket && isHost) socket.emit('admin:start'); });
-el('btnStop').addEventListener('click',  function(){ if(socket && isHost) socket.emit('admin:stop'); });
+el('btnStart').addEventListener('click', function(){ if(isHost && H) hStart(); });
+el('btnStop').addEventListener('click',  function(){ if(isHost && H) hEnd('stopped'); });
 el('resClose').addEventListener('click', function(){ el('result').className = 'result'; });
 el('specNext').addEventListener('click', function(){ specIdx++; });
 el('specPrev').addEventListener('click', function(){ specIdx--; });
@@ -958,7 +1497,7 @@ el('specPrev').addEventListener('click', function(){ specIdx--; });
 /* ====================== 루프 ====================== */
 var clock = new THREE.Clock();
 var camPos = new THREE.Vector3(0,6,14), camTarget = new THREE.Vector3(), lookAt = new THREE.Vector3();
-var sendAcc = 0;
+var lastSent = {x:0, z:0, ry:0, mv:0, t:0}, staleAcc = 0;
 
 function tick(){
   requestAnimationFrame(tick);
@@ -972,7 +1511,7 @@ function tick(){
     el('hShield').textContent = ((shieldUntil-now)/1000).toFixed(1);
   } else el('chipShield').style.display = 'none';
 
-  /* 내 이동 (로컬 예측) */
+  /* 내 이동 (내 화면에서 바로 계산) */
   var mv = 0;
   if(phase==='play' && !iAmDead){
     var ix=0, iz=0;
@@ -996,12 +1535,26 @@ function tick(){
   }
   myMv = mv;
 
-  /* 서버로 위치 전송 */
-  sendAcc += dt;
-  if(socket && sendAcc > 1/15){
-    sendAcc = 0;
-    if(phase==='play' && !iAmDead) socket.emit('move', {x:myX, z:myZ, ry:myRy, mv:mv?1:0});
+  /* 5. 내 위치를 다른 사람들에게 — 움직였을 때만 (가만히 있으면 2초마다 한 번) */
+  if(joined){
+    var moved = Math.abs(myX-lastSent.x) > .05 || Math.abs(myZ-lastSent.z) > .05 ||
+                Math.abs(myRy-lastSent.ry) > .05 || (mv?1:0) !== lastSent.mv;
+    if((moved && phase==='play' && !iAmDead) || now - lastSent.t > 2000){
+      pendingMove = {x:r2(myX), z:r2(myZ), ry:r2(myRy), mv:mv?1:0};
+      lastSent = {x:myX, z:myZ, ry:myRy, mv:mv?1:0, t:now};
+    }
+    if(isHost && H && H.players[myId] && H.players[myId].alive){
+      var hp = H.players[myId];
+      hp.x = myX; hp.z = myZ; hp.ry = myRy; hp.mv = mv?1:0; hp.lastMove = now;
+    }
+    var meEnt = getEnt(myId, 'human');
+    meEnt.x = meEnt.tx = myX; meEnt.z = meEnt.tz = myZ;
+    meEnt.ry = meEnt.tRy = myRy; meEnt.mv = mv?1:0; meEnt.fresh = false;
+    meEnt.alive = iAmDead ? 0 : 1;
   }
+
+  staleAcc += dt;
+  if(staleAcc > 1){ staleAcc = 0; dropStale(); }
 
   /* 문제 타이머 */
   if(quiz && !quiz.answered){
@@ -1010,40 +1563,55 @@ function tick(){
     el('qBar').style.width = Math.max(0, quiz.t/quiz.limit*100) + '%';
   }
 
-  /* 엔티티 보간 + 애니메이션 */
+  /* 엔티티 보간 + 애니메이션 (초당 4회 받은 좌표를 부드럽게 잇는다) */
   var showSeekers = (revealUntil > now) || iAmDead;
-  var focus = null, aliveList = [];
+  var aliveList = [];
+  var k = 1 - Math.pow(.004, dt);
   for(var id in ents){
     var e = ents[id];
-    var k = 1 - Math.pow(.0009, dt);
-    e.x += (e.tx - e.x) * k;
-    e.z += (e.tz - e.z) * k;
-    if(e.kind==='hen'){ e.y += (e.ty - e.y) * k; }
+    if(e.kind==='hen' && e.fly){
+      var ft = (now - e.fly.start)/1000, fy = e.fly.vy*ft - HEN_G/2*ft*ft;
+      e.x = e.tx = e.fly.x0 + e.fly.vx*ft;
+      e.z = e.tz = e.fly.z0 + e.fly.vz*ft;
+      e.y = e.ty = Math.max(0, fy);
+      if(fy <= 0 && ft > .2) e.fly = null;
+    } else {
+      e.x += (e.tx - e.x) * k;
+      e.z += (e.tz - e.z) * k;
+      if(e.kind==='hen'){ e.y += (e.ty - e.y) * k; }
+    }
     var dRy = ((e.tRy - e.ry + Math.PI*3) % (Math.PI*2)) - Math.PI;
     e.ry += dRy * k;
     e.obj.position.set(e.x, e.kind==='hen' ? e.y : 0, e.z);
     e.obj.rotation.y = e.ry;
+    var far = Math.hypot(e.x-myX, e.z-myZ);
 
     if(e.kind==='hen'){
+      e.obj.visible = far < 190;
       var dd = e.obj.userData;
       var w = Math.sin(t*3.2+dd.phase);
-      if(e.mv){ dd.inner.scale.set(1.25,.78,1.25); e.obj.rotation.x += dt*7; }
+      if(e.fly || e.mv){ dd.inner.scale.set(1.25,.78,1.25); e.obj.rotation.x += dt*7; }
       else { e.obj.rotation.x = 0; dd.inner.scale.set(1-w*.05*cfg.jiggle, 1+w*.07*cfg.jiggle, 1-w*.05*cfg.jiggle); }
       dd.head.position.y = .76 + Math.sin(t*3.4+dd.phase)*.04;
       continue;
     }
 
-    var isMe = (id === myId);
-    var isPlayerEnt = (id.charAt(0) !== 'n');
+    var isPlayerEnt = isPlayerId(id);
     if(isPlayerEnt && e.alive) aliveList.push(e);
     // 술래 표시는 감별기를 썼거나 내가 탈락했을 때만
     var seekerHere = false;
     if(showSeekers && isPlayerEnt){
       for(var r=0;r<roster.length;r++) if(roster[r].id===id && roster[r].seeker) seekerHere = true;
     }
-    setGlow(e.obj, seekerHere || (isMe && e.exposed));
-    var far = Math.hypot(e.x-myX, e.z-myZ);
-    e.obj.visible = e.obj.visible && far < 190;
+    setGlow(e.obj, seekerHere);
+    if(!e.alive){                                 // 맞으면 뒤로 픽 쓰러졌다가 사라진다
+      e.dieT = (e.dieT || 0) + dt;
+      e.obj.rotation.x = -Math.min(1, e.dieT/.35) * Math.PI/2;
+      e.obj.visible = e.dieT < 1.6 && far < 190;
+      continue;
+    }
+    if(e.dieT){ e.dieT = 0; e.obj.rotation.x = 0; }
+    e.obj.visible = far < 190;
     if(far < 95) animateHuman(e.obj, t, dt, e.mv ? 1 : 0);
   }
 
@@ -1055,7 +1623,7 @@ function tick(){
     fx = target.x; fz = target.z;
     el('deadText').textContent = '관전 중 · ' + (specIdx+1) + ' / ' + aliveList.length + ' (술래는 빨간색)';
   }
-  camTarget.set(fx + Math.sin(yaw)*11.5, 5.6, fz + Math.cos(yaw)*11.5);
+  camTarget.set(fx + Math.sin(yaw)*11.5, camH, fz + Math.cos(yaw)*11.5);
   camPos.lerp(camTarget, 1-Math.pow(.0015, dt));
   camera.position.copy(camPos);
   lookAt.set(fx, 1.5, fz);

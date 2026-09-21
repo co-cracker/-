@@ -1,0 +1,17 @@
+{
+  "name": "kkokko-arena",
+  "version": "1.0.0",
+  "description": "꼬꼬 아레나 — 오로라 계산 퀴즈 술래잡기 멀티플레이 서버",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "license": "MIT"
+}

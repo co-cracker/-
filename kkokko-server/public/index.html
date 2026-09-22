@@ -2,6 +2,10 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#15110E">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>꼬꼬 아레나</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -18,7 +22,7 @@
     color-scheme: dark;
   }
   *{box-sizing:border-box}
-  html,body{height:100%}
+  html,body{height:100%;height:100dvh}
   body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--body);overflow:hidden;
        -webkit-font-smoothing:antialiased; -webkit-tap-highlight-color:transparent}
   h1,h2,h3,h4,h5{font-family:var(--display);font-weight:400;margin:0}
@@ -44,7 +48,8 @@
   .gate .note{margin-top:14px;font-size:11.5px;color:var(--ink-faint);line-height:1.6}
 
   /* ---------- HUD ---------- */
-  .hud{position:fixed;inset:0;pointer-events:none;padding:10px;
+  .hud{position:fixed;left:0;right:0;top:var(--vvt,0px);height:var(--vvh,100%);pointer-events:none;padding:10px;
+       padding-top:max(10px,env(safe-area-inset-top));
        padding-left:max(10px,env(safe-area-inset-left));padding-right:max(10px,env(safe-area-inset-right));display:flex;flex-direction:column;gap:9px}
   .hud button,.hud .pe{pointer-events:auto}
   .row-top{display:flex;gap:10px;align-items:flex-start}
@@ -134,6 +139,10 @@
   body.touch .stick{display:block}
   body.touch .keys{display:none}
   .stick{left:max(14px,env(safe-area-inset-left))}
+  .fsBtn{pointer-events:auto;background:rgba(20,15,11,.8);border:1px solid rgba(255,255,255,.25);color:var(--ink);
+        border-radius:11px;padding:5px 10px;font-family:var(--display);font-size:12px;cursor:pointer;display:none}
+  body.touch .fsBtn{display:block}
+  body.fs .fsBtn{display:none}
 
   /* 세로로 들고 있으면 가로로 돌리라고 안내 */
   .rotate{position:fixed;inset:0;z-index:70;display:none;place-items:center;text-align:center;padding:24px;
@@ -148,7 +157,8 @@
 
   /* 휴대폰 가로 모드 : 화면 높이가 낮으므로 모두 작게, 문제는 위 가운데, 알림은 아래 가운데 */
   @media (orientation:landscape) and (max-height:540px){
-    .hud{padding-top:6px;padding-bottom:max(8px,env(safe-area-inset-bottom));gap:6px}
+    .hud{padding-top:max(6px,env(safe-area-inset-top));padding-bottom:max(8px,env(safe-area-inset-bottom));gap:6px}
+    .qbar{top:calc(var(--vvt,0px) + max(6px,env(safe-area-inset-top)))}
     .col-left{display:grid;grid-template-columns:auto auto;gap:4px}
     .chip{padding:3px 8px;font-size:10.5px;border-radius:9px}
     .chip .k{font-size:9px}
@@ -258,6 +268,7 @@
       <div class="chip seeker" id="chipSeeker" style="display:none"><span class="k">역할</span><span class="v">술래</span></div>
       <div class="chip frozen" id="chipFrozen" style="display:none;border-color:rgba(95,211,243,.7)"><span class="k">🧊 얼음</span><span class="v num" id="hFrozen">2.0</span></div>
       <button class="adminBtn" id="adminBtn">👑 관리</button>
+      <button class="fsBtn" id="fsBtn">⛶ 전체화면</button>
     </div>
     <div class="feedwrap"><div class="feed" id="feed"></div></div>
     <div class="roster" id="roster">
@@ -688,6 +699,7 @@ function buildWorld(seed){
 }
 
 /* ====================== 게임 상태 (클라이언트) ====================== */
+var myRoom = 'main';
 var myId = null, myName = '', isHost = false, hostId = null, joined = false;
 var ents = {};        // id -> {obj, x,z,ry,mv, alive, shield, exposed, kind}
 var roster = [], phase = 'lobby';
@@ -777,9 +789,61 @@ function onPacket(data, meta){
   }
 }
 
-function channelName(room){
-  var safe = encodeURIComponent(room.toLowerCase()).replace(/[^A-Za-z0-9_\-=@,.;]/g, '.');
-  return 'presence-kkokko-' + safe;
+/* 버전이 바뀌면 GAME_VER 를 올린다 → 새 버전끼리만 같은 방에 모인다 */
+var GAME_VER = 'v3';
+var LEGACY_PREFIXES = ['presence-kkokko-'];          // 예전 버전들이 쓰던 채널 이름
+function roomSafe(room){ return encodeURIComponent(room.toLowerCase()).replace(/[^A-Za-z0-9_\-=@,.;]/g, '.'); }
+function channelName(room){ return 'presence-kk' + GAME_VER + '-' + roomSafe(room); }
+
+/* 예전 버전 청소기 (방장만 실행)
+   예전 버전은 '가장 작은 id = 방장' 이고, 방장이 보낸 kicked 를 받으면 연결을 끊는다.
+   그래서 가장 작은 id(p0)로 예전 채널에 들어가 방장이 된 뒤, 거기 있는 사람 전원에게 kicked 를 보낸다.
+   예전 화면은 "방에서 나왔습니다 — 새로고침하면 다시 들어갈 수 있습니다" 가 뜨고, 새로고침하면 새 버전이 열린다. */
+var sweepers = [];
+function makeAuthPusher(uid, name){
+  return new Pusher(PUSHER_KEY, {
+    cluster: PUSHER_CLUSTER,
+    channelAuthorization: {
+      customHandler: function(params, callback){
+        var channelData = JSON.stringify({user_id: uid, user_info: {name: name}});
+        var sig = CryptoJS.HmacSHA256(params.socketId + ':' + params.channelName + ':' + channelData, PUSHER_SECRET).toString(CryptoJS.enc.Hex);
+        callback(null, {auth: PUSHER_KEY + ':' + sig, channel_data: channelData});
+      }
+    }
+  });
+}
+function startSweepers(){
+  stopSweepers();
+  LEGACY_PREFIXES.forEach(function(prefix){
+    var chName = prefix + roomSafe(myRoom);
+    var main = makeAuthPusher('p0', '새 버전 안내');
+    var ch = main.subscribe(chName);
+    sweepers.push(main);
+    function kick(ids){
+      var items = [];
+      ids.forEach(function(id){ if(id !== 'p0' && id !== 'p0x') items.push(['kicked', {}, id]); });
+      if(items.length) try{ ch.trigger(EVT, {f:'p0', e:items}); }catch(err){}
+    }
+    ch.bind('pusher:subscription_succeeded', function(){
+      // 예전 버전은 누가 나갈 때만 방장을 다시 뽑으므로, 보조 연결 하나를 넣었다 빼서 재선출을 일으킨다
+      var helper = makeAuthPusher('p0x', '새 버전 안내');
+      sweepers.push(helper);
+      helper.subscribe(chName).bind('pusher:subscription_succeeded', function(){
+        setTimeout(function(){ helper.disconnect(); }, 800);
+        setTimeout(function(){
+          var ids = []; ch.members.each(function(m){ ids.push(m.id); });
+          kick(ids);
+        }, 2500);
+      });
+    });
+    // 나중에 예전 화면으로 들어오는 사람도 들어오자마자 내보낸다 (그 화면은 접속할 때 p0 를 방장으로 본다)
+    ch.bind('pusher:member_added', function(m){ setTimeout(function(){ kick([m.id]); }, 1500); });
+    ch.bind('pusher:subscription_error', function(){ main.disconnect(); });
+  });
+}
+function stopSweepers(){
+  sweepers.forEach(function(p){ try{ p.disconnect(); }catch(err){} });
+  sweepers = [];
 }
 
 function connect(name, room){
@@ -787,7 +851,7 @@ function connect(name, room){
     alert('코드 맨 위의 PUSHER_KEY / PUSHER_SECRET 을 먼저 입력하세요'); return;
   }
   if(pusher) return;
-  myName = name;
+  myName = name; myRoom = room;
   // 시간순으로 정렬되는 id → 가장 작은 id 가 가장 먼저 들어온 사람 = 방장
   myId = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   el('btnJoin').textContent = '접속 중…';
@@ -852,8 +916,8 @@ function electHost(){
   hostId = ids[0] || myId;
   isHost = (hostId === myId);
   el('adminBtn').className = 'adminBtn' + (isHost ? ' on' : '');
-  if(isHost && !was) becomeHost();
-  if(!isHost){ H = null; el('adminPanel').className = 'adminPanel'; }
+  if(isHost && !was){ becomeHost(); startSweepers(); }
+  if(!isHost){ H = null; el('adminPanel').className = 'adminPanel'; if(was) stopSweepers(); }
 }
 
 /* ---------- 받은 메시지 처리 (예전 socket.on 들) ---------- */
@@ -1794,7 +1858,24 @@ function tick(){
   renderer.render(scene, camera);
 }
 
+/* 휴대폰 가로 화면에서 주소창·툴바가 위를 덮으면, 실제로 보이는 영역에만 HUD 를 그린다 */
+function fitViewport(){
+  var vv = window.visualViewport, root = document.documentElement.style;
+  root.setProperty('--vvh', (vv ? vv.height : innerHeight) + 'px');
+  root.setProperty('--vvt', (vv ? vv.offsetTop : 0) + 'px');
+  if(window.scrollY) window.scrollTo(0, 0);
+  var fs = !!(document.fullscreenElement || document.webkitFullscreenElement) ||
+           matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
+  document.body.classList.toggle('fs', fs);
+}
+if(window.visualViewport){
+  visualViewport.addEventListener('resize', fitViewport);
+  visualViewport.addEventListener('scroll', fitViewport);
+}
+document.addEventListener('fullscreenchange', function(){ fitViewport(); resize(); });
+document.addEventListener('webkitfullscreenchange', function(){ fitViewport(); resize(); });
 function resize(){
+  fitViewport();
   renderer.setSize(innerWidth, innerHeight, false);
   camera.aspect = innerWidth/innerHeight;
   camera.updateProjectionMatrix();
@@ -1802,6 +1883,14 @@ function resize(){
 addEventListener('resize', resize);
 addEventListener('orientationchange', function(){ setTimeout(resize, 250); });
 /* 휴대폰: 들어가기를 누를 때 전체화면 + 가로 고정 시도 (안드로이드 크롬. 아이폰은 지원 안 해서 조용히 넘어감) */
+el('fsBtn').addEventListener('click', function(){
+  var de = document.documentElement;
+  if(!(de.requestFullscreen || de.webkitRequestFullscreen)){
+    banner('전체화면을 지원하지 않는 브라우저예요', '공유 버튼 → "홈 화면에 추가" 로 열면 주소창 없이 할 수 있어요');
+    return;
+  }
+  goLandscape();
+});
 function goLandscape(){
   if(!document.body.classList.contains('touch')) return;
   var de = document.documentElement, req = de.requestFullscreen || de.webkitRequestFullscreen;
